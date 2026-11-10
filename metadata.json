@@ -1,0 +1,6 @@
+{
+  "name": "Music Video Studio",
+  "description": "Create HD music videos from MP3 audio or music links and photos with custom AI video prompts, camera movements, lyric overlays, real-time preview, and HD MP4 video export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

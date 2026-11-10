@@ -1,0 +1,32 @@
+<resources>
+    <string name="app_name">Music Video Studio</string>
+    <string name="app_subtitle">MP3 + Photo to HD Music Video</string>
+    <string name="tab_create">Create Studio</string>
+    <string name="tab_preview">Video Preview</string>
+    <string name="tab_exports">HD Exports</string>
+    <string name="add_photo">Add Photo</string>
+    <string name="change_photo">Change Photo</string>
+    <string name="select_a_song">Select a song</string>
+    <string name="or_label">OR</string>
+    <string name="music_link_label">Music Link</string>
+    <string name="music_link_placeholder">Paste a Suno or audio link…</string>
+    <string name="prompt_placeholder">Optionally add a story, style, camera movement, or chorus highlight…</string>
+    <string name="model_standard">Model Standard</string>
+    <string name="model_cinema_pro">Model Cinema Pro</string>
+    <string name="model_beat_pulse">Model Beat Pulse</string>
+    <string name="resolution_720p">Resolution 720P</string>
+    <string name="resolution_1080p">Resolution 1080P</string>
+    <string name="aspect_9_16">Aspect ratio 9 : 16</string>
+    <string name="aspect_16_9">Aspect ratio 16 : 9</string>
+    <string name="aspect_1_1">Aspect ratio 1 : 1</string>
+    <string name="more_options">More Options</string>
+    <string name="lyrics_label">Lyrics</string>
+    <string name="ai_storyboard_button">AI Director Enhance</string>
+    <string name="generate_preview_button">Generate &amp; Preview Music Video</string>
+    <string name="export_hd_video_button">Export HD MP4 Video</string>
+    <string name="firebase_ai_notice">AI Director runs in sample preview mode because Firebase setup was declined. Enable Firebase to connect live Gemini AI storyboarding.</string>
+    <string name="sample_tracks_label">Quick Studio Presets (Try Instantly)</string>
+    <string name="share_video">Share HD Video</string>
+    <string name="save_to_gallery">Save to Movies Gallery</string>
+    <string name="back_to_editor">Edit Studio Settings</string>
+</resources>
