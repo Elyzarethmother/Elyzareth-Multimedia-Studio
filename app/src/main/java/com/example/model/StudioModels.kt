@@ -242,7 +242,7 @@ data class AiStoryboardPlan(
     val syncedLyrics: List<LyricLine>,
     val cues: List<StoryboardCue>,
     val audioIntelligence: AudioIntelligenceReport? = null,
-    val modelUsed: String = "gemini-3.8-flash"
+    val modelUsed: String = "Local PCM Spectrum Engine"
 )
 
 /**
@@ -272,13 +272,6 @@ sealed class AudioSource {
         val uri: Uri,
         val displayName: String,
         val durationMs: Long = 15_000L
-    ) : AudioSource()
-
-    data class MusicLink(
-        val url: String,
-        val parsedTitle: String,
-        val synthPresetIndex: Int = 0,
-        val durationMs: Long = 12_000L
     ) : AudioSource()
 
     data class BuiltInSynthTrack(

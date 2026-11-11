@@ -20,8 +20,7 @@ import java.util.concurrent.TimeUnit
  *
  * Enforces Section 5 rules:
  * - WorkManager [Data] contains ONLY `"jobId" to jobId`.
- * - Network constraints (`NetworkType.CONNECTED`) are attached ONLY when [requiresNetwork] is true
- *   (local MP4 import jobs set `requiresNetwork = false` and execute offline).
+ * - All local media import and recovery jobs execute offline with `NetworkType.NOT_REQUIRED`.
  * - Uses deterministic unique work names (`"studio_ingest_job_$jobId"`) with [ExistingWorkPolicy.KEEP].
  */
 object GenerationWorkOrchestrator {
@@ -41,22 +40,19 @@ object GenerationWorkOrchestrator {
 
     /**
      * Builds a [OneTimeWorkRequest] for [AssetDownloadWorker].
-     * Network constraints are applied ONLY when [requiresNetwork] is `true`.
+     * All Phase 1/2 jobs execute offline with [NetworkType.NOT_REQUIRED].
      */
     fun buildAssetIngestionWorkRequest(
         jobId: String,
-        requiresNetwork: Boolean
+        requiresNetwork: Boolean = false
     ): OneTimeWorkRequest {
-        val constraintsBuilder = Constraints.Builder()
-        if (requiresNetwork) {
-            constraintsBuilder.setRequiredNetworkType(NetworkType.CONNECTED)
-        } else {
-            constraintsBuilder.setRequiredNetworkType(NetworkType.NOT_REQUIRED)
-        }
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
+            .build()
 
         return OneTimeWorkRequestBuilder<AssetDownloadWorker>()
             .setInputData(buildMinimalJobInputData(jobId))
-            .setConstraints(constraintsBuilder.build())
+            .setConstraints(constraints)
             .setBackoffCriteria(
                 BackoffPolicy.EXPONENTIAL,
                 15L,

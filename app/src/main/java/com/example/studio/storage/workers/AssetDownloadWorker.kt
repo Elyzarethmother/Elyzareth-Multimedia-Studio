@@ -122,8 +122,8 @@ class AssetDownloadWorker(
                         jobDao.transitionStatus(jobId, GenerationJobStatus.DOWNLOADING, nowEpochMs = nowEpochMs)
                         return validateAndPromoteStagedFile(jobId, stagingFile, assetManager, expectedSha256Hex, nowEpochMs)
                     }
-                    // Cloud provider adapters are not authorized in Phase 2; fail safely if no provider is attached
-                    val reason = "Cloud provider '${currentJob.providerId}' adapter is not enabled in Phase 2."
+                    // Remote provider adapters are disabled in offline mode; fail safely if no local staging file is present
+                    val reason = "Provider '${currentJob.providerId}' adapter is not enabled in local offline mode."
                     jobDao.transitionStatus(jobId, GenerationJobStatus.SUBMITTING, submissionAttemptedAtMs = nowEpochMs, nowEpochMs = nowEpochMs)
                     jobDao.transitionStatus(jobId, GenerationJobStatus.FAILED, errorMessage = reason, nowEpochMs = nowEpochMs)
                     JobStepOutcome.TerminalFailure(GenerationJobStatus.FAILED, reason)

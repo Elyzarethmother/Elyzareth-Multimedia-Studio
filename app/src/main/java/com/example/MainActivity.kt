@@ -52,7 +52,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ai.configureAppCheck
 import com.example.ui.StudioCreateScreen
 import com.example.ui.StudioExportsScreen
 import com.example.ui.StudioPreviewScreen
@@ -71,8 +70,6 @@ import com.example.viewmodel.StudioDestination
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // STEP 1: Configure Firebase App Check with launch intent before any UI or Firebase operations
-        configureAppCheck(this, intent)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {

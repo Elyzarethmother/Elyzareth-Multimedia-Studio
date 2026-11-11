@@ -1,21 +1,20 @@
 package com.example
 
 import android.net.Uri
-import com.example.ai.AudioPayload
-import com.example.ai.AudioPayloadValidator
-import com.example.ai.FirebaseAiStoryboardRepository
 import com.example.media.AudioPcmAnalyzer
 import com.example.media.EdlHistoryStack
 import com.example.media.EdlTimelineEngine
 import com.example.media.SynthAudioGenerator
 import com.example.media.VideoFrameRenderer
 import com.example.model.AudioSource
+import com.example.model.AudioSpectrumTimeline
 import com.example.model.CameraMovementPreset
 import com.example.model.EdlTransitionType
 import com.example.model.LyricLine
 import com.example.model.LyricSourceType
 import com.example.model.StoryboardCue
 import com.example.model.VideoAspectRatio
+import com.example.model.VisualFilterStyle
 import com.example.viewmodel.StudioUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,16 +29,23 @@ import kotlin.math.sin
 class ExampleUnitTest {
 
     @Test
-    fun `1 - verify Firebase configuration files exist and match provisioned project`() {
+    fun `1 - verify offline configuration removes Firebase files and INTERNET permission`() {
         val googleServicesFile = File("google-services.json")
-        assertTrue("google-services.json must exist in app module", googleServicesFile.exists())
-        val content = googleServicesFile.readText()
-        assertTrue("project_id must match provisioned project", content.contains("gen-lang-client-0610960695"))
-        assertTrue("package_name must match com.aistudio.musicvideo.mvxkpq", content.contains("com.aistudio.musicvideo.mvxkpq"))
+        assertFalse("google-services.json must be removed in Phase 1", googleServicesFile.exists())
 
         val appletConfigFile = File("src/main/res/values/firebase_applet_config.xml")
-        assertTrue("firebase_applet_config.xml must exist", appletConfigFile.exists())
-        assertTrue("recaptcha_site_key must be configured", appletConfigFile.readText().contains("recaptcha_site_key"))
+        assertFalse("firebase_applet_config.xml must be removed in Phase 1", appletConfigFile.exists())
+
+        val envExampleFile = File("../.env.example")
+        assertFalse(".env.example must be removed in Phase 1", envExampleFile.exists())
+
+        val manifestFile = File("src/main/AndroidManifest.xml")
+        assertTrue("AndroidManifest.xml must exist", manifestFile.exists())
+        val manifestContent = manifestFile.readText()
+        assertFalse(
+            "AndroidManifest.xml must not request android.permission.INTERNET",
+            manifestContent.contains("android.permission.INTERNET")
+        )
     }
 
     @Test
@@ -173,101 +179,160 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun `5 - lyric accuracy prevents invented lyrics on imported songs and preserves uncertainty`() {
+    fun `5 - lyric accuracy prevents invented lyrics on imported songs and local storyboard preserves EDL timing and trimmed spectrum alignment`() {
+        val importedTrackEdl = EdlTimelineEngine.createInitialEdl(
+            sourceDurationSec = 120f,
+            trimStartSec = 0f,
+            trimEndSec = 120f,
+            defaultCamera = CameraMovementPreset.SLOW_PUSH_IN,
+            storyboardPlan = null,
+            initialLyrics = emptyList()
+        )
         val importedTrackState = StudioUiState(
-            selectedAudio = AudioSource.MusicLink(
-                url = "https://suno.com/song/custom-imported-track",
-                parsedTitle = "Imported_Suno_Track.mp3",
-                durationMs = 120_000L
-            ),
+            fullSongDurationSec = 120f,
+            projectEdl = importedTrackEdl,
             storyboardPlan = null
         )
-        // Must NEVER invent demo lyrics when an imported/linked song has no AI transcription
+        // Must NEVER invent demo lyrics when an imported local song has no user lyrics
         assertTrue(
-            "Imported/linked track without AI transcription must have empty activeLyrics rather than fake demo sentences",
+            "Imported local track without lyrics must have empty activeLyrics rather than fake demo sentences",
             importedTrackState.activeLyrics.isEmpty()
         )
 
-        // Verify JSON parser preserves TRANSCRIBED_FROM_AUDIO vs USER_PROMPT_DERIVED and uncertaintyNote
-        val repo = FirebaseAiStoryboardRepository()
-        val sampleJson = """
-            {
-              "enhancedPrompt": "Neon stage push-in",
-              "directorSummary": "4 scenes synced to vocals",
-              "instrumentalSectionsSummary": "0:00-0:12 intro synth",
-              "chorusHighlightTiming": "0:30-0:55 chorus bloom",
-              "suggestedCamera": "ORBITAL_SWAY",
-              "suggestedFilter": "CYBER_CYAN",
-              "cues": [
-                {
-                  "timeRangeLabel": "0:00 - 0:30",
-                  "startFraction": 0.0,
-                  "endFraction": 0.5,
-                  "sceneTitle": "Intro Build",
-                  "cameraPreset": "SLOW_PUSH_IN",
-                  "cameraNote": "Push in",
-                  "visualTransition": "Cross-Dissolve",
-                  "sectionType": "INTRO",
-                  "vocalSectionTag": "Instrumental",
-                  "lightingIntensity": 0.5
-                }
-              ],
-              "syncedLyrics": [
-                {
-                  "startSec": 12.0,
-                  "endSec": 18.5,
-                  "text": "Electric shadows on the rain",
-                  "isChorusHighlight": true,
-                  "sourceType": "TRANSCRIBED_FROM_AUDIO",
-                  "uncertaintyNote": "Estimated +/- 1.5s window from vocal phrase onset"
-                }
-              ]
-            }
-        """.trimIndent()
+        // Build an existing EDL on a 30s track trimmed to [10s .. 26s] (16s active duration)
+        // with custom unequal scene durations (3s, 5s, 4s, 4s), a verified assetId on scene_2, and user lyrics
+        var edl = EdlTimelineEngine.createInitialEdl(
+            sourceDurationSec = 30f,
+            trimStartSec = 10f,
+            trimEndSec = 26f,
+            defaultCamera = CameraMovementPreset.PARALLAX_DRIFT,
+            initialLyrics = listOf(
+                LyricLine(
+                    startSec = 1.5f,
+                    endSec = 4.5f,
+                    text = "Electric shadows on the rain",
+                    isChorusHighlight = true,
+                    sourceType = LyricSourceType.USER_CORRECTED,
+                    uncertaintyNote = "User-corrected timing"
+                )
+            )
+        )
+        edl = EdlTimelineEngine.changeSceneDuration(edl, "scene_1", 3f)
+        edl = EdlTimelineEngine.attachVerifiedAssetToScene(edl, "scene_2", "asset_scene_2_v01")
+        val preStarts = edl.scenes.map { it.startSec }
+        val preEnds = edl.scenes.map { it.endSec }
+        val preIds = edl.scenes.map { it.id }
 
-        val parsed = repo.parseStoryboardJson(sampleJson, durationSec = 60f, isFromRealAudio = true)
-        assertEquals(1, parsed.syncedLyrics.size)
-        val lyric = parsed.syncedLyrics.first()
-        assertEquals(LyricSourceType.TRANSCRIBED_FROM_AUDIO, lyric.sourceType)
-        assertEquals("Estimated +/- 1.5s window from vocal phrase onset", lyric.uncertaintyNote)
-        assertEquals(CameraMovementPreset.SLOW_PUSH_IN, parsed.cues.first().cameraPresetOverride)
+        // Build 30s of 24fps PCM spectrum where source audio [13s..18s] (which maps to edited scene_2 [3s..8s])
+        // has high bass & total energy (0.85f), while [0s..10s] (trimmed out) has maximum energy (1.0f)
+        val fps = 24
+        val frames = List(30 * fps) { frameIdx ->
+            val sourceSec = frameIdx.toFloat() / fps
+            when {
+                sourceSec < 10f -> FloatArray(24) { 1.0f } // Trimmed out region — must be ignored!
+                sourceSec in 13f..18f -> FloatArray(24) { band -> if (band <= 4) 0.90f else 0.75f } // Scene 2 peak
+                else -> FloatArray(24) { 0.20f }
+            }
+        }
+        val spectrum = AudioSpectrumTimeline(
+            framesPerSecond = fps,
+            durationSec = 30f,
+            frames = frames,
+            isFromDecodedPcm = true
+        )
+
+        val (plan, updatedEdl) = EdlTimelineEngine.buildLocalStoryboardFromEdlAndSpectrum(
+            sourceDurationSec = 30f,
+            trimStartSec = 10f,
+            trimEndSec = 26f,
+            defaultCamera = CameraMovementPreset.PARALLAX_DRIFT,
+            selectedFilter = VisualFilterStyle.CYBER_CYAN,
+            userPrompt = "Neon rain reflections",
+            existingEdl = edl,
+            spectrumTimeline = spectrum
+        )
+
+        assertEquals("Local PCM Spectrum Engine", plan.modelUsed)
+        assertEquals(preIds, updatedEdl.scenes.map { it.id })
+        assertEquals(preStarts, updatedEdl.scenes.map { it.startSec })
+        assertEquals(preEnds, updatedEdl.scenes.map { it.endSec })
+        assertEquals("asset_scene_2_v01", updatedEdl.scenes[1].assetId)
+        assertEquals("INTRO", updatedEdl.scenes[0].sectionType)
+        assertEquals("CHORUS_HIGHLIGHT", updatedEdl.scenes[1].sectionType)
+        assertEquals(CameraMovementPreset.BASS_PUMP_ZOOM, updatedEdl.scenes[1].cameraPreset)
+        assertEquals("VERSE", updatedEdl.scenes[2].sectionType)
+        assertEquals("OUTRO", updatedEdl.scenes[3].sectionType)
+        assertFalse("New local spectrum suggestions must not be auto-approved", updatedEdl.scenes[1].isApproved)
+        assertEquals(1, updatedEdl.lyrics.size)
+        assertEquals("Electric shadows on the rain", updatedEdl.lyrics.first().text)
     }
 
     @Test
-    fun `6 - audio payload safety validator rejects oversized or unsupported MIME files without truncation`() {
-        assertTrue(AudioPayloadValidator.isSupportedAudioMime("audio/mpeg"))
-        assertTrue(AudioPayloadValidator.isSupportedAudioMime("audio/wav"))
-        assertFalse(AudioPayloadValidator.isSupportedAudioMime("video/avi"))
-        assertFalse(AudioPayloadValidator.isSupportedAudioMime("application/pdf"))
+    fun `6 - local storyboard engine preserves user settings on silent or malformed spectrum and is idempotent`() {
+        var edl = EdlTimelineEngine.createInitialEdl(
+            sourceDurationSec = 16f,
+            defaultCamera = CameraMovementPreset.ORBITAL_SWAY
+        )
+        edl = EdlTimelineEngine.updateSceneCamera(edl, "scene_2", CameraMovementPreset.BASS_PUMP_ZOOM)
+        edl = EdlTimelineEngine.updateSceneTransition(edl, "scene_2", EdlTransitionType.FLASH_CUT)
 
-        assertEquals("audio/mpeg", AudioPayloadValidator.normalizeMimeType("audio/mp3", "song.mp3"))
-        assertEquals("audio/flac", AudioPayloadValidator.normalizeMimeType(null, "track.flac"))
-
-        // Verify FirebaseAiStoryboardRepository rejects incomplete/truncated payloads immediately
-        val repo = FirebaseAiStoryboardRepository()
-        val truncatedPayload = AudioPayload(
-            bytes = ByteArray(1024),
-            mimeType = "audio/mpeg",
-            totalFileSizeBytes = 25L * 1024L * 1024L,
-            isCompleteTrackBytes = false,
-            isRealImportedMp3 = true
+        // 1. Malformed / non-finite / digital-silence spectrum must NEVER overwrite user scene settings
+        val malformedFrames = List(16 * 24) { idx ->
+            if (idx % 2 == 0) FloatArray(24) { Float.NaN }
+            else FloatArray(12) { 0.9f } // Wrong band count (!= 24)
+        }
+        val malformedSpectrum = AudioSpectrumTimeline(
+            framesPerSecond = 24,
+            durationSec = 16f,
+            frames = malformedFrames,
+            isFromDecodedPcm = true
         )
 
-        var rejectedTruncated = false
-        try {
-            kotlinx.coroutines.runBlocking {
-                repo.generateStoryboard(
-                    rawPrompt = "Test",
-                    songTitle = "Oversized Song",
-                    durationSec = 180f,
-                    lyricsEnabled = true,
-                    audioPayload = truncatedPayload
-                )
-            }
-        } catch (e: IllegalArgumentException) {
-            rejectedTruncated = e.message?.contains("Refusing to truncate track") == true
-        }
-        assertTrue("Repository must explicitly reject truncated/oversized audio payloads", rejectedTruncated)
+        val (_, preservedEdl) = EdlTimelineEngine.buildLocalStoryboardFromEdlAndSpectrum(
+            sourceDurationSec = 16f,
+            trimStartSec = 0f,
+            trimEndSec = 16f,
+            defaultCamera = CameraMovementPreset.SLOW_PUSH_IN,
+            selectedFilter = VisualFilterStyle.SYNTHWAVE_NEON,
+            userPrompt = "Keep user edits",
+            existingEdl = edl,
+            spectrumTimeline = malformedSpectrum
+        )
+        assertEquals("Must not increment revision or overwrite scenes when spectrum has no valid energy", edl, preservedEdl)
+        assertEquals(CameraMovementPreset.BASS_PUMP_ZOOM, preservedEdl.scenes[1].cameraPreset)
+        assertTrue(preservedEdl.scenes[1].isApproved)
+
+        // 2. Valid spectrum: running buildLocalStoryboardFromEdlAndSpectrum twice with identical inputs must be idempotent
+        val validSpectrum = AudioSpectrumTimeline(
+            framesPerSecond = 24,
+            durationSec = 16f,
+            frames = List(16 * 24) { idx ->
+                val sec = idx / 24f
+                FloatArray(24) { if (sec in 8f..12f) 0.80f else 0.25f }
+            },
+            isFromDecodedPcm = true
+        )
+        val (_, firstPassEdl) = EdlTimelineEngine.buildLocalStoryboardFromEdlAndSpectrum(
+            sourceDurationSec = 16f,
+            trimStartSec = 0f,
+            trimEndSec = 16f,
+            defaultCamera = CameraMovementPreset.SLOW_PUSH_IN,
+            selectedFilter = VisualFilterStyle.SYNTHWAVE_NEON,
+            userPrompt = "Idempotency check",
+            existingEdl = edl,
+            spectrumTimeline = validSpectrum
+        )
+        val (_, secondPassEdl) = EdlTimelineEngine.buildLocalStoryboardFromEdlAndSpectrum(
+            sourceDurationSec = 16f,
+            trimStartSec = 0f,
+            trimEndSec = 16f,
+            defaultCamera = CameraMovementPreset.SLOW_PUSH_IN,
+            selectedFilter = VisualFilterStyle.SYNTHWAVE_NEON,
+            userPrompt = "Idempotency check",
+            existingEdl = firstPassEdl,
+            spectrumTimeline = validSpectrum
+        )
+        assertEquals("Second identical pass must not append duplicate SceneVersionSnapshots or increment revision", firstPassEdl, secondPassEdl)
     }
 
     @Test

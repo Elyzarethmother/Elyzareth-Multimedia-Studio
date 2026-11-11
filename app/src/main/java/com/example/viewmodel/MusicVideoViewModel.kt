@@ -13,11 +13,6 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
-import com.example.ai.AiStoryboardRepository
-import com.example.ai.AudioPayload
-import com.example.ai.AudioPayloadReadResult
-import com.example.ai.AudioPayloadValidator
-import com.example.ai.FirebaseAiStoryboardRepository
 import com.example.media.AudioPcmAnalyzer
 import com.example.media.EdlHistoryStack
 import com.example.media.EdlTimelineEngine
@@ -56,7 +51,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -97,7 +91,6 @@ data class StudioUiState(
     ),
     val loadedBitmap: Bitmap? = null,
     val selectedAudio: AudioSource = StudioSamplePresets.presets.first(),
-    val musicLinkInput: String = "",
     val promptText: String = StudioSamplePresets.presets.first().defaultPrompt,
     val selectedModel: VideoModelType = VideoModelType.STANDARD,
     val selectedResolution: VideoResolution = VideoResolution.HD_720P,
@@ -136,7 +129,6 @@ data class StudioUiState(
     val activeSongTitle: String
         get() = when (val src = selectedAudio) {
             is AudioSource.LocalMp3Uri -> src.displayName
-            is AudioSource.MusicLink -> src.parsedTitle
             is AudioSource.BuiltInSynthTrack -> "${src.title} • ${src.artist}"
         }
 
@@ -175,18 +167,18 @@ data class StudioUiState(
 
     /**
      * Never invents generic demonstration sentences for imported songs.
-     * Returns the current approved EDL lyrics (user-corrected, AI-transcribed, or built-in demo captions).
+     * Returns the current approved EDL lyrics (user-corrected or built-in demo captions).
      */
     val activeLyrics: List<LyricLine>
         get() {
             if (projectEdl !== defaultInitialEdl) {
                 return projectEdl.lyrics.map { it.toLyricLine() }
             }
-            val aiLyrics = storyboardPlan?.syncedLyrics
-            if (!aiLyrics.isNullOrEmpty()) return aiLyrics
+            val planLyrics = storyboardPlan?.syncedLyrics
+            if (!planLyrics.isNullOrEmpty()) return planLyrics
             return when (selectedAudio) {
                 is AudioSource.BuiltInSynthTrack -> projectEdl.lyrics.map { it.toLyricLine() }
-                is AudioSource.LocalMp3Uri, is AudioSource.MusicLink -> emptyList()
+                is AudioSource.LocalMp3Uri -> emptyList()
             }
         }
 
@@ -213,7 +205,7 @@ data class StudioUiState(
                 LyricLine(
                     startSec = step * 2f,
                     endSec = durationSec,
-                    text = "Tap 'AI Storyboard' for live Gemini scene cues",
+                    text = "Tap 'Build Scene Cues' for local PCM spectrum cues",
                     isChorusHighlight = false,
                     sourceType = LyricSourceType.SYNTH_DEMO_CAPTION,
                     uncertaintyNote = "Built-in studio demonstration caption"
@@ -223,9 +215,7 @@ data class StudioUiState(
     }
 }
 
-class MusicVideoViewModel(
-    private val aiRepository: AiStoryboardRepository = FirebaseAiStoryboardRepository()
-) : ViewModel() {
+class MusicVideoViewModel : ViewModel() {
 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
@@ -262,7 +252,7 @@ class MusicVideoViewModel(
             ?: when (audioSource) {
                 is AudioSource.BuiltInSynthTrack ->
                     StudioUiState.demoCaptionsForBuiltInTrack(songTitle, sourceDurationSec)
-                is AudioSource.LocalMp3Uri, is AudioSource.MusicLink ->
+                is AudioSource.LocalMp3Uri ->
                     emptyList()
             }
         return EdlTimelineEngine.createInitialEdl(
@@ -914,14 +904,6 @@ class MusicVideoViewModel(
                         )
                     }
                 }
-                is AudioSource.MusicLink -> {
-                    _uiState.update {
-                        it.copy(
-                            isAnalyzingAudioPcm = false,
-                            audioSpectrumTimeline = null
-                        )
-                    }
-                }
             }
         }
     }
@@ -957,7 +939,6 @@ class MusicVideoViewModel(
             _uiState.update {
                 it.copy(
                     selectedAudio = localSource,
-                    musicLinkInput = "",
                     fullSongDurationSec = initialSec,
                     previewDurationSec = initialEdl.totalEditedDurationSec,
                     exportFullSong = true,
@@ -974,74 +955,7 @@ class MusicVideoViewModel(
                 )
             }
             analyzeCurrentAudioSpectrum(context, localSource)
-            runAiStoryboardAnalysis(context)
         }
-    }
-
-    fun onMusicLinkChanged(newLink: String) {
-        val trimmed = newLink.trim()
-        val updatedAudio = if (trimmed.isNotEmpty()) {
-            val parsedName = parseTitleFromMusicLink(trimmed)
-            AudioSource.MusicLink(
-                url = trimmed,
-                parsedTitle = parsedName,
-                synthPresetIndex = (trimmed.hashCode().and(0x7FFFFFFF)) % 3,
-                durationMs = 12_000L
-            )
-        } else {
-            _uiState.value.selectedAudio
-        }
-
-        _uiState.update {
-            it.copy(
-                musicLinkInput = newLink,
-                selectedAudio = updatedAudio
-            )
-        }
-    }
-
-    fun applyMusicLink(context: Context) {
-        val link = _uiState.value.musicLinkInput.trim()
-        if (link.isBlank()) {
-            _uiState.update { it.copy(statusSnackbarMessage = "Paste a Suno or direct audio URL first.") }
-            return
-        }
-        val parsedName = parseTitleFromMusicLink(link)
-        val audio = AudioSource.MusicLink(
-            url = link,
-            parsedTitle = parsedName,
-            synthPresetIndex = (link.hashCode().and(0x7FFFFFFF)) % 3,
-            durationMs = 12_000L
-        )
-        val initialEdl = EdlTimelineEngine.createInitialEdl(
-            sourceDurationSec = 12f,
-            trimStartSec = 0f,
-            trimEndSec = 12f,
-            defaultCamera = _uiState.value.selectedCamera,
-            storyboardPlan = null,
-            initialLyrics = emptyList(),
-            spectrumTimeline = null
-        )
-        _uiState.update {
-            it.copy(
-                selectedAudio = audio,
-                fullSongDurationSec = 12f,
-                previewDurationSec = initialEdl.totalEditedDurationSec,
-                exportFullSong = true,
-                clipStartSec = 0f,
-                clipEndSec = 12f,
-                previewTimeSec = 0f,
-                storyboardPlan = null,
-                projectEdl = initialEdl,
-                edlHistory = EdlHistoryStack(originalEdl = initialEdl),
-                selectedSceneId = initialEdl.scenes.firstOrNull()?.id,
-                selectedLyricId = initialEdl.lyrics.firstOrNull()?.id,
-                selectedAudioSegmentId = initialEdl.audioSegments.firstOrNull()?.id,
-                statusSnackbarMessage = "Loaded Music Link: $parsedName"
-            )
-        }
-        analyzeCurrentAudioSpectrum(context, audio)
-        runAiStoryboardAnalysis(context)
     }
 
     fun selectPresetTrack(context: Context, preset: AudioSource.BuiltInSynthTrack) {
@@ -1061,7 +975,6 @@ class MusicVideoViewModel(
             it.copy(
                 selectedAudio = preset,
                 selectedPhoto = photoSource,
-                musicLinkInput = "",
                 promptText = preset.defaultPrompt,
                 fullSongDurationSec = durSec,
                 previewDurationSec = initialEdl.totalEditedDurationSec,
@@ -1151,102 +1064,67 @@ class MusicVideoViewModel(
     }
 
     /**
-     * Executes a real Gemini inference request via Firebase AI Logic.
-     * Enforces Priority 6 (Audio Payload Safety): validates MIME type and total file size before
-     * reading bytes, never silently truncates an imported MP3, and reports oversized or unsupported
-     * audio files transparently.
+     * Generates deterministic local storyboard scene cues from the active [ProjectEdl] and
+     * decoded PCM [AudioSpectrumTimeline] without any network or cloud dependencies.
      */
     fun runAiStoryboardAnalysis(context: Context? = null) {
         val snapshot = _uiState.value
-        viewModelScope.launch {
+
+        viewModelScope.launch(Dispatchers.Default) {
             _uiState.update {
                 it.copy(
                     isGeneratingStoryboard = true,
                     aiErrorMessage = null
                 )
             }
+
             try {
-                val payloadResult = if (context != null) {
-                    readAndValidateAudioPayload(context, snapshot.selectedAudio)
-                } else {
-                    null
-                }
-
-                val validatedPayload: AudioPayload? = when (payloadResult) {
-                    is AudioPayloadReadResult.ValidInlinePayload -> payloadResult.payload
-                    is AudioPayloadReadResult.ExceedsInlineLimit -> {
-                        val sizeMb = payloadResult.actualSizeBytes / (1024 * 1024)
-                        val maxMb = payloadResult.maxAllowedBytes / (1024 * 1024)
-                        _uiState.update {
-                            it.copy(
-                                isGeneratingStoryboard = false,
-                                aiErrorMessage = "Audio Payload Limit Exceeded: The selected audio file is ${sizeMb} MB, which exceeds the ${maxMb} MB inline analysis limit. Music Video Studio refuses to silently truncate your track. Full-song local playback and HD MP4 export remain available."
-                            )
-                        }
-                        return@launch
-                    }
-                    is AudioPayloadReadResult.UnsupportedMimeType -> {
-                        _uiState.update {
-                            it.copy(
-                                isGeneratingStoryboard = false,
-                                aiErrorMessage = "Unsupported Audio Format for AI Analysis: '${payloadResult.mimeType}'. Supported formats: MP3, WAV, AAC, M4A, OGG, FLAC."
-                            )
-                        }
-                        return@launch
-                    }
-                    is AudioPayloadReadResult.ReadError -> {
-                        _uiState.update {
-                            it.copy(
-                                isGeneratingStoryboard = false,
-                                aiErrorMessage = "Audio Read Error: ${payloadResult.message}"
-                            )
-                        }
-                        return@launch
-                    }
-                    null -> null
-                }
-
-                val plan = aiRepository.generateStoryboard(
-                    rawPrompt = snapshot.promptText,
-                    songTitle = snapshot.activeSongTitle,
-                    durationSec = snapshot.fullSongDurationSec,
-                    lyricsEnabled = snapshot.lyricsEnabled,
-                    photoBitmap = snapshot.loadedBitmap,
-                    audioPayload = validatedPayload
-                )
-                _uiState.update { current ->
-                    val newEdl = EdlTimelineEngine.createInitialEdl(
-                        sourceDurationSec = current.fullSongDurationSec,
-                        trimStartSec = current.projectEdl.trimStartSec,
-                        trimEndSec = current.projectEdl.trimEndSec,
-                        defaultCamera = plan.suggestedCamera,
-                        storyboardPlan = plan,
-                        initialLyrics = plan.syncedLyrics,
-                        spectrumTimeline = current.audioSpectrumTimeline
+                val (plan, generatedEdl) =
+                    EdlTimelineEngine.buildLocalStoryboardFromEdlAndSpectrum(
+                        sourceDurationSec = snapshot.fullSongDurationSec,
+                        trimStartSec = snapshot.projectEdl.trimStartSec,
+                        trimEndSec = snapshot.projectEdl.trimEndSec,
+                        defaultCamera = snapshot.selectedCamera,
+                        selectedFilter = snapshot.selectedFilter,
+                        userPrompt = snapshot.promptText,
+                        existingEdl = snapshot.projectEdl,
+                        spectrumTimeline = snapshot.audioSpectrumTimeline
                     )
+
+                _uiState.update { current ->
+                    val (committedEdl, updatedHistory) =
+                        EdlTimelineEngine.recordEdit(
+                            currentEdl = current.projectEdl,
+                            newEdl = generatedEdl,
+                            history = current.edlHistory
+                        )
+
                     current.copy(
                         isGeneratingStoryboard = false,
                         storyboardPlan = plan,
                         aiErrorMessage = null,
-                        selectedCamera = plan.suggestedCamera,
-                        selectedFilter = plan.suggestedFilter,
-                        projectEdl = newEdl,
-                        edlHistory = EdlHistoryStack(originalEdl = newEdl),
-                        selectedSceneId = newEdl.scenes.firstOrNull()?.id,
-                        selectedLyricId = newEdl.lyrics.firstOrNull()?.id,
-                        selectedAudioSegmentId = newEdl.audioSegments.firstOrNull()?.id,
-                        statusSnackbarMessage = "Gemini AI Storyboard & EDL Timeline ready!"
+                        projectEdl = committedEdl,
+                        edlHistory = updatedHistory,
+                        previewDurationSec = committedEdl.totalEditedDurationSec,
+                        selectedSceneId = current.selectedSceneId
+                            ?.takeIf { id ->
+                                committedEdl.scenes.any { it.id == id }
+                            }
+                            ?: committedEdl.scenes.firstOrNull()?.id,
+                        statusSnackbarMessage =
+                            "Local PCM scene cues generated successfully."
                     )
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Live Gemini storyboard analysis failed", e)
-                val diagnosticMessage = classifyAiError(e)
+                Log.e(TAG, "Local storyboard generation failed", e)
+
                 _uiState.update {
                     it.copy(
                         isGeneratingStoryboard = false,
-                        aiErrorMessage = diagnosticMessage
+                        aiErrorMessage =
+                            "Local storyboard generation failed: ${e.localizedMessage}"
                     )
                 }
             }
@@ -1264,101 +1142,6 @@ class MusicVideoViewModel(
 
         if (_uiState.value.storyboardPlan == null && !_uiState.value.isGeneratingStoryboard) {
             runAiStoryboardAnalysis(context)
-        }
-    }
-
-    /**
-     * Validates MIME type and exact file size before reading bytes for Gemini inline submission.
-     * Never silently truncates an MP3 file.
-     */
-    internal suspend fun readAndValidateAudioPayload(
-        context: Context,
-        audioSource: AudioSource
-    ): AudioPayloadReadResult? = withContext(Dispatchers.IO) {
-        try {
-            when (audioSource) {
-                is AudioSource.LocalMp3Uri -> {
-                    val rawMime = context.contentResolver.getType(audioSource.uri)
-                    val normalizedMime = AudioPayloadValidator.normalizeMimeType(rawMime, audioSource.displayName)
-                    if (!AudioPayloadValidator.isSupportedAudioMime(normalizedMime)) {
-                        return@withContext AudioPayloadReadResult.UnsupportedMimeType(normalizedMime)
-                    }
-
-                    val declaredSize = queryFileSize(context, audioSource.uri)
-                    if (declaredSize != null && declaredSize > AudioPayloadValidator.MAX_INLINE_AUDIO_BYTES) {
-                        return@withContext AudioPayloadReadResult.ExceedsInlineLimit(
-                            actualSizeBytes = declaredSize,
-                            maxAllowedBytes = AudioPayloadValidator.MAX_INLINE_AUDIO_BYTES
-                        )
-                    }
-
-                    val out = ByteArrayOutputStream()
-                    var totalRead = 0L
-                    context.contentResolver.openInputStream(audioSource.uri)?.use { stream ->
-                        val chunk = ByteArray(64 * 1024)
-                        while (true) {
-                            val r = stream.read(chunk)
-                            if (r <= 0) break
-                            totalRead += r
-                            if (totalRead > AudioPayloadValidator.MAX_INLINE_AUDIO_BYTES) {
-                                return@withContext AudioPayloadReadResult.ExceedsInlineLimit(
-                                    actualSizeBytes = declaredSize ?: totalRead,
-                                    maxAllowedBytes = AudioPayloadValidator.MAX_INLINE_AUDIO_BYTES
-                                )
-                            }
-                            out.write(chunk, 0, r)
-                        }
-                    } ?: return@withContext AudioPayloadReadResult.ReadError("Could not open input stream for selected MP3.")
-
-                    val bytes = out.toByteArray()
-                    if (bytes.isEmpty()) {
-                        return@withContext AudioPayloadReadResult.ReadError("Selected audio file is empty (0 bytes).")
-                    }
-
-                    AudioPayloadReadResult.ValidInlinePayload(
-                        AudioPayload(
-                            bytes = bytes,
-                            mimeType = normalizedMime,
-                            totalFileSizeBytes = bytes.size.toLong(),
-                            isCompleteTrackBytes = true,
-                            isRealImportedMp3 = true
-                        )
-                    )
-                }
-                is AudioSource.BuiltInSynthTrack -> {
-                    val wavFile = ensureSynthWavFile(context, audioSource.synthPresetIndex, (audioSource.durationMs / 1000L).toInt())
-                    if (wavFile.exists() && wavFile.length() <= AudioPayloadValidator.MAX_INLINE_AUDIO_BYTES) {
-                        val bytes = wavFile.readBytes()
-                        AudioPayloadReadResult.ValidInlinePayload(
-                            AudioPayload(
-                                bytes = bytes,
-                                mimeType = "audio/wav",
-                                totalFileSizeBytes = bytes.size.toLong(),
-                                isCompleteTrackBytes = true,
-                                isRealImportedMp3 = false
-                            )
-                        )
-                    } else null
-                }
-                is AudioSource.MusicLink -> null
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error validating audio payload for AI analysis", e)
-            AudioPayloadReadResult.ReadError(e.localizedMessage ?: "Failed to read audio file.")
-        }
-    }
-
-    private fun classifyAiError(e: Exception): String {
-        val raw = e.localizedMessage ?: e.message ?: "Unknown AI error"
-        val lower = raw.lowercase()
-        return when {
-            "403" in lower || "app check" in lower || "attestation" in lower || "permission" in lower ->
-                "Authentication / App Check Error (HTTP 403): $raw"
-            "429" in lower || "quota" in lower || "rate limit" in lower || "resource_exhausted" in lower ->
-                "Quota / Rate Limit Exceeded (HTTP 429): $raw"
-            "timeout" in lower || "unable to resolve host" in lower || "network" in lower || "connect" in lower ->
-                "Network Connectivity Error: $raw"
-            else -> "Gemini AI Error: $raw"
         }
     }
 
@@ -1470,9 +1253,6 @@ class MusicVideoViewModel(
                 is AudioSource.LocalMp3Uri -> {
                     player.setDataSource(context, audioSource.uri)
                 }
-                is AudioSource.MusicLink -> {
-                    player.setDataSource(audioSource.url)
-                }
                 is AudioSource.BuiltInSynthTrack -> {
                     val wavFile = ensureSynthWavFile(
                         context,
@@ -1548,7 +1328,6 @@ class MusicVideoViewModel(
                     )
                     AudioPcmAnalyzer.analyzePcmSamples(pcm, SynthAudioGenerator.SAMPLE_RATE)
                 }
-                is AudioSource.MusicLink -> null
             }
 
             val approvedEdl = state.projectEdl
@@ -1658,22 +1437,6 @@ class MusicVideoViewModel(
         }
     }
 
-    private fun parseTitleFromMusicLink(url: String): String {
-        val clean = url.substringBefore("?").trimEnd('/')
-        val lastSegment = clean.substringAfterLast('/')
-        return when {
-            "suno" in url.lowercase() -> {
-                val idPart = lastSegment.take(8).ifBlank { "Track" }
-                "Suno AI Song ($idPart)"
-            }
-            lastSegment.isNotBlank() && lastSegment.length <= 36 -> {
-                lastSegment.replace("-", " ").replace("_", " ")
-                    .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
-            }
-            else -> "Linked Studio Audio Track"
-        }
-    }
-
     private fun queryFileName(context: Context, uri: Uri): String? {
         return try {
             context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -1684,19 +1447,6 @@ class MusicVideoViewModel(
             }
         } catch (_: Exception) {
             uri.lastPathSegment
-        }
-    }
-
-    private fun queryFileSize(context: Context, uri: Uri): Long? {
-        return try {
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (sizeIndex >= 0 && cursor.moveToFirst() && !cursor.isNull(sizeIndex)) {
-                    cursor.getLong(sizeIndex)
-                } else null
-            }
-        } catch (_: Exception) {
-            null
         }
     }
 

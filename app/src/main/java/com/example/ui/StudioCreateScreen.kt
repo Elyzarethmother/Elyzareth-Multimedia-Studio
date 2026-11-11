@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MovieCreation
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
@@ -197,11 +196,9 @@ fun StudioCreateScreen(
                                     modifier = Modifier.weight(0.62f),
                                     verticalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    SongAndMusicLinkRow(
+                                    SelectSongRow(
                                         uiState = uiState,
-                                        onSelectMp3 = { audioPickerLauncher.launch("audio/*") },
-                                        onMusicLinkChanged = viewModel::onMusicLinkChanged,
-                                        onApplyMusicLink = { viewModel.applyMusicLink(context) }
+                                        onSelectMp3 = { audioPickerLauncher.launch("audio/*") }
                                     )
                                     VideoPromptBox(
                                         promptText = uiState.promptText,
@@ -226,11 +223,9 @@ fun StudioCreateScreen(
                                         .fillMaxWidth()
                                         .height(196.dp)
                                 )
-                                SongAndMusicLinkRow(
+                                SelectSongRow(
                                     uiState = uiState,
-                                    onSelectMp3 = { audioPickerLauncher.launch("audio/*") },
-                                    onMusicLinkChanged = viewModel::onMusicLinkChanged,
-                                    onApplyMusicLink = { viewModel.applyMusicLink(context) }
+                                    onSelectMp3 = { audioPickerLauncher.launch("audio/*") }
                                 )
                                 VideoPromptBox(
                                     promptText = uiState.promptText,
@@ -288,7 +283,7 @@ fun StudioCreateScreen(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "AI Storyboard",
+                    text = "Build Scene Cues",
                     style = MaterialTheme.typography.labelLarge,
                     color = TextPrimaryWhite,
                     maxLines = 1,
@@ -346,13 +341,13 @@ fun StudioCreateScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.Info,
-                                contentDescription = "AI Error",
+                                contentDescription = "Storyboard Error",
                                 tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Firebase AI Logic Diagnostic",
+                                text = "Local Storyboard Diagnostic",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = TextPrimaryWhite
                             )
@@ -387,7 +382,7 @@ fun StudioCreateScreen(
             onSelectSamplePhoto = { resId, title -> viewModel.selectSamplePhoto(context, resId, title) }
         )
 
-        // Live Gemini AI Storyboard & Multimodal Audio Intelligence Card
+        // Local PCM Spectrum Storyboard Summary Card
         uiState.storyboardPlan?.let { plan ->
             AiStoryboardSummaryCard(
                 plan = plan
@@ -506,82 +501,23 @@ private fun AddPhotoCard(
 }
 
 @Composable
-private fun SongAndMusicLinkRow(
+private fun SelectSongRow(
     uiState: StudioUiState,
-    onSelectMp3: () -> Unit,
-    onMusicLinkChanged: (String) -> Unit,
-    onApplyMusicLink: () -> Unit
+    onSelectMp3: () -> Unit
 ) {
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val isCompact = maxWidth < 430.dp
-
-        val songLabel = when (val src = uiState.selectedAudio) {
-            is AudioSource.LocalMp3Uri -> src.displayName
-            is AudioSource.BuiltInSynthTrack -> src.title
-            is AudioSource.MusicLink -> "Select a song"
-        }
-
-        if (isCompact) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                SelectSongButton(
-                    songLabel = songLabel,
-                    isMp3Active = uiState.selectedAudio !is AudioSource.MusicLink,
-                    onClick = onSelectMp3,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(58.dp)
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = stringResource(R.string.or_label),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = TextSecondaryMuted
-                    )
-                    MusicLinkPill(
-                        linkText = uiState.musicLinkInput,
-                        onLinkChanged = onMusicLinkChanged,
-                        onApply = onApplyMusicLink,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(58.dp)
-                    )
-                }
-            }
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                SelectSongButton(
-                    songLabel = songLabel,
-                    isMp3Active = uiState.selectedAudio !is AudioSource.MusicLink,
-                    onClick = onSelectMp3,
-                    modifier = Modifier
-                        .weight(0.45f)
-                        .height(62.dp)
-                )
-                Text(
-                    text = stringResource(R.string.or_label),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimaryWhite
-                )
-                MusicLinkPill(
-                    linkText = uiState.musicLinkInput,
-                    onLinkChanged = onMusicLinkChanged,
-                    onApply = onApplyMusicLink,
-                    modifier = Modifier
-                        .weight(0.55f)
-                        .height(62.dp)
-                )
-            }
-        }
+    val songLabel = when (val src = uiState.selectedAudio) {
+        is AudioSource.LocalMp3Uri -> src.displayName
+        is AudioSource.BuiltInSynthTrack -> src.title
     }
+
+    SelectSongButton(
+        songLabel = songLabel,
+        isMp3Active = true,
+        onClick = onSelectMp3,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(60.dp)
+    )
 }
 
 @Composable
@@ -639,77 +575,6 @@ private fun SelectSongButton(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MusicLinkPill(
-    linkText: String,
-    onLinkChanged: (String) -> Unit,
-    onApply: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(ElectricViolet)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text(
-            text = stringResource(R.string.music_link_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimaryWhite,
-            maxLines = 1
-        )
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .height(42.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF362296))
-                .padding(horizontal = 10.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Link,
-                    contentDescription = stringResource(R.string.music_link_label),
-                    tint = TextPrimaryWhite.copy(alpha = 0.85f),
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clickable { onApply() }
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Box(modifier = Modifier.weight(1f)) {
-                    if (linkText.isEmpty()) {
-                        Text(
-                            text = "Paste a Suno link…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextPrimaryWhite.copy(alpha = 0.55f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    BasicTextField(
-                        value = linkText,
-                        onValueChange = onLinkChanged,
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextPrimaryWhite),
-                        cursorBrush = SolidColor(CyberLime),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("music_link_input")
-                    )
-                }
             }
         }
     }
@@ -1112,7 +977,7 @@ private fun AiStoryboardSummaryCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Live Gemini AI Storyboard (${plan.modelUsed})",
+                        text = "Local Spectrum Storyboard (${plan.modelUsed})",
                         style = MaterialTheme.typography.titleMedium,
                         color = TextPrimaryWhite
                     )
@@ -1230,7 +1095,7 @@ private fun AiStoryboardSummaryCard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Gemini Audio Intelligence",
+                            text = "Local Audio Intelligence",
                             style = MaterialTheme.typography.titleSmall,
                             color = ElectricCyan
                         )

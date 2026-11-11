@@ -12,6 +12,7 @@ import com.example.model.LyricSourceType
 import com.example.model.ProjectEdl
 import com.example.model.SceneVersionSnapshot
 import com.example.model.StoryboardCue
+import com.example.model.VisualFilterStyle
 import java.util.Locale
 import kotlin.math.abs
 
@@ -972,6 +973,289 @@ object EdlTimelineEngine {
             effectiveCamera = activeScene?.cameraPreset ?: fallbackCamera,
             effectiveTransition = activeScene?.transitionType ?: EdlTransitionType.CROSS_DISSOLVE
         )
+    }
+
+    /**
+     * Deterministic, offline storyboard and EDL cue builder driven by decoded PCM spectrum frames
+     * and the active [ProjectEdl]. Preserves existing scene boundaries, IDs, verified [assetId]s,
+     * version histories, lyrics, and audio segments.
+     */
+    fun buildLocalStoryboardFromEdlAndSpectrum(
+        sourceDurationSec: Float,
+        trimStartSec: Float,
+        trimEndSec: Float,
+        defaultCamera: CameraMovementPreset,
+        selectedFilter: VisualFilterStyle,
+        userPrompt: String,
+        existingEdl: ProjectEdl?,
+        spectrumTimeline: AudioSpectrumTimeline?
+    ): Pair<AiStoryboardPlan, ProjectEdl> {
+
+        val safeDuration = sourceDurationSec
+            .takeIf { it.isFinite() && it >= 2f } ?: 12f
+
+        val safeStart = trimStartSec
+            .takeIf { it.isFinite() }
+            ?.coerceIn(0f, safeDuration - 1f) ?: 0f
+
+        val safeEnd = trimEndSec
+            .takeIf { it.isFinite() }
+            ?.coerceIn(safeStart + 1f, safeDuration) ?: safeDuration
+
+        // Preserve existing EDL. Only reflow if the user changed the trim.
+        val baseEdl = if (existingEdl != null && existingEdl.scenes.isNotEmpty()) {
+            if (
+                abs(existingEdl.trimStartSec - safeStart) > 0.01f ||
+                abs(existingEdl.trimEndSec - safeEnd) > 0.01f
+            ) {
+                trimAudioRange(existingEdl, safeStart, safeEnd)
+            } else {
+                existingEdl
+            }
+        } else {
+            createInitialEdl(
+                sourceDurationSec = safeDuration,
+                trimStartSec = safeStart,
+                trimEndSec = safeEnd,
+                defaultCamera = defaultCamera,
+                storyboardPlan = null,
+                initialLyrics = existingEdl?.lyrics?.map { it.toLyricLine() }.orEmpty(),
+                spectrumTimeline = spectrumTimeline
+            )
+        }
+
+        val cleanPrompt = userPrompt.trim().take(120)
+        val scenes = baseEdl.scenes
+        val fps = spectrumTimeline?.framesPerSecond ?: 0
+
+        // Only actual, structurally valid PCM frames are accepted.
+        val validSpectrum = spectrumTimeline != null &&
+            spectrumTimeline.isFromDecodedPcm &&
+            fps > 0 &&
+            spectrumTimeline.frames.any { frame ->
+                frame.size == 24 && frame.all { it.isFinite() }
+            }
+
+        data class Energy(
+            val bass: Float = 0f,
+            val mid: Float = 0f,
+            val total: Float = 0f,
+            val samples: Int = 0
+        )
+
+        val energies = scenes.map { scene ->
+            if (!validSpectrum || spectrumTimeline == null) {
+                Energy()
+            } else {
+                var bassSum = 0f
+                var midSum = 0f
+                var totalSum = 0f
+                var count = 0
+
+                // Sample in EDITED timeline coordinates.
+                // Convert every sample independently to source time.
+                // This correctly skips removed audio segments.
+                val sampleCount = kotlin.math.ceil(
+                    scene.durationSec * fps
+                ).toInt().coerceAtLeast(1)
+
+                for (i in 0 until sampleCount) {
+                    val editedTime = (
+                        scene.startSec + (i + 0.5f) / fps
+                    ).coerceAtMost(scene.endSec - 0.001f)
+
+                    val sourceTime = editedTimeToSourceTime(
+                        baseEdl,
+                        editedTime
+                    )
+
+                    val frameIndex = kotlin.math.floor(
+                        sourceTime * fps
+                    ).toInt()
+
+                    if (frameIndex !in spectrumTimeline.frames.indices) continue
+
+                    val frame = spectrumTimeline.frames[frameIndex]
+
+                    // Reject malformed frames. Never invent energy.
+                    if (frame.size != 24 || !frame.all { it.isFinite() }) continue
+
+                    val values = frame.map { it.coerceIn(0f, 1f) }
+
+                    bassSum += values.slice(0..4).average().toFloat()
+                    midSum += values.slice(5..15).average().toFloat()
+                    totalSum += values.average().toFloat()
+                    count++
+                }
+
+                if (count == 0) Energy()
+                else Energy(
+                    bass = bassSum / count,
+                    mid = midSum / count,
+                    total = totalSum / count,
+                    samples = count
+                )
+            }
+        }
+
+        val hasMeasuredEnergy = validSpectrum &&
+            energies.any { it.samples > 0 }
+
+        // Analyzer's digital-silence floor is approximately 0.04.
+        val maximumEnergy = energies.maxOfOrNull { it.total } ?: 0f
+        val silent = !hasMeasuredEnergy || maximumEnergy <= 0.041f
+
+        // Chorus can only be assigned to an interior scene.
+        val interiorIndices = if (scenes.size >= 3) {
+            (1 until scenes.lastIndex).toList()
+        } else {
+            emptyList()
+        }
+
+        val peakIndex = if (!silent && interiorIndices.isNotEmpty()) {
+            interiorIndices.maxWithOrNull(
+                compareBy<Int> { energies[it].total }
+                    .thenByDescending { -it }
+            )
+        } else {
+            null
+        }
+
+        val updatedScenes = scenes.mapIndexed { index, scene ->
+
+            // Missing spectrum must not overwrite user decisions.
+            if (silent) {
+                return@mapIndexed scene
+            }
+
+            val energy = energies[index]
+
+            val section = when {
+                index == 0 -> "INTRO"
+                index == scenes.lastIndex -> "OUTRO"
+                index == peakIndex -> "CHORUS_HIGHLIGHT"
+                else -> "VERSE"
+            }
+
+            val camera = when {
+                index == 0 -> CameraMovementPreset.SLOW_PUSH_IN
+                index == scenes.lastIndex -> CameraMovementPreset.ORBITAL_SWAY
+                index == peakIndex && energy.bass >= 0.45f ->
+                    CameraMovementPreset.BASS_PUMP_ZOOM
+                else -> defaultCamera
+            }
+
+            val transition = when (section) {
+                "INTRO" -> EdlTransitionType.CROSS_DISSOLVE
+                "CHORUS_HIGHLIGHT" -> EdlTransitionType.FLASH_CUT
+                "OUTRO" -> EdlTransitionType.FADE_TO_BLACK
+                else -> EdlTransitionType.WHIP_PAN
+            }
+
+            val lighting = (
+                0.30f + 0.70f * (energy.total / maximumEnergy)
+            ).coerceIn(0.30f, 1f)
+
+            val spectralTag =
+                "Measured Low-Band: ${(energy.bass * 100).toInt()}% • " +
+                "Mid-Band: ${(energy.mid * 100).toInt()}%"
+
+            val note = buildString {
+                append(camera.label)
+                append(" • ")
+                append(transition.label)
+                if (cleanPrompt.isNotBlank()) {
+                    append(" • Note: ")
+                    append(cleanPrompt)
+                }
+            }
+
+            // Idempotency: do not create duplicate versions.
+            val unchanged =
+                scene.cameraPreset == camera &&
+                scene.transitionType == transition &&
+                scene.sectionType == section &&
+                scene.cameraNote == note &&
+                kotlin.math.abs(scene.lightingIntensity - lighting) < 0.001f &&
+                scene.vocalSectionTag == spectralTag
+
+            if (unchanged) {
+                scene
+            } else {
+                val nextVersion =
+                    (scene.versions.maxOfOrNull { it.versionNumber }
+                        ?: scene.versions.size) + 1
+
+                val snapshot = SceneVersionSnapshot(
+                    versionNumber = nextVersion,
+                    label = "v$nextVersion (Local Spectrum Suggestion)",
+                    sceneTitle = scene.sceneTitle,
+                    cameraNote = note,
+                    cameraPreset = camera,
+                    transitionType = transition,
+                    lightingIntensity = lighting,
+                    sectionType = section,
+                    vocalSectionTag = spectralTag,
+                    isApproved = false,
+                    assetId = scene.assetId
+                )
+
+                val versions = scene.versions + snapshot
+
+                scene.copy(
+                    cameraNote = note,
+                    cameraPreset = camera,
+                    transitionType = transition,
+                    lightingIntensity = lighting,
+                    sectionType = section,
+                    vocalSectionTag = spectralTag,
+                    versions = versions,
+                    activeVersionIndex = versions.lastIndex,
+                    isApproved = false
+                )
+            }
+        }
+
+        val changed = updatedScenes != scenes
+
+        val updatedEdl = baseEdl.copy(
+            scenes = updatedScenes,
+            revisionNumber = if (changed) {
+                baseEdl.revisionNumber + 1
+            } else {
+                baseEdl.revisionNumber
+            }
+        )
+
+        fun timeLabel(seconds: Float): String {
+            val s = seconds.toInt().coerceAtLeast(0)
+            return String.format(Locale.US, "%d:%02d", s / 60, s % 60)
+        }
+
+        val chorus = peakIndex?.let { updatedScenes[it] }
+
+        val plan = AiStoryboardPlan(
+            enhancedPrompt = cleanPrompt.ifBlank {
+                "Local PCM Spectrum-Synced Timeline"
+            },
+            directorSummary =
+                "${updatedScenes.size} scenes processed using local PCM analysis.",
+            instrumentalSectionsSummary =
+                "Trim: ${timeLabel(safeStart)} – ${timeLabel(safeEnd)}",
+            chorusHighlightTiming = chorus?.let {
+                "${timeLabel(it.startSec)} – ${timeLabel(it.endSec)}"
+            } ?: "No eligible interior chorus peak detected.",
+            suggestedCamera = defaultCamera,
+            suggestedFilter = selectedFilter,
+            syncedLyrics = updatedEdl.lyrics.map {
+                it.toLyricLine()
+            },
+            cues = toStoryboardCues(updatedEdl),
+            audioIntelligence = null,
+            modelUsed = "Local PCM Spectrum Engine"
+        )
+
+        return plan to updatedEdl
     }
 
     /**

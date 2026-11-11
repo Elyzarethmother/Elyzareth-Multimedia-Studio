@@ -345,11 +345,9 @@ object HdVideoExporter {
     }
 
     /**
-     * Routes audio transcoding and muxing strictly by [AudioSource]:
+     * Routes audio transcoding and muxing strictly by local [AudioSource]:
      * - [AudioSource.LocalMp3Uri]: Decodes the original imported audio using MediaExtractor + MediaCodec,
      *   encodes the decoded PCM into AAC, and muxes with H.264 video. Never substitutes synthetic audio.
-     * - [AudioSource.MusicLink]: Decodes direct audio URL if reachable, or fails explicitly if the remote
-     *   web URL is not a decodable audio stream.
      * - [AudioSource.BuiltInSynthTrack]: Uses streaming chunked PCM synthesis for built-in demonstration tracks.
      */
     private suspend fun transcodeAndMuxAudioWithVideo(
@@ -369,21 +367,6 @@ object HdVideoExporter {
                 decodeImportedAudioAndMux(
                     context = context,
                     audioUri = src.uri,
-                    remoteUrl = null,
-                    clipStartUs = (effectiveStartSec * 1_000_000L).toLong(),
-                    clipEndUs = (effectiveEndSec * 1_000_000L).toLong(),
-                    activeAudioSegments = activeSegs,
-                    videoOnlyMp4File = videoOnlyMp4File,
-                    finalOutputMp4File = finalOutputMp4File,
-                    onProgress = onProgress
-                )
-            }
-            is AudioSource.MusicLink -> {
-                onProgress(0.70f, "Decoding linked audio stream to AAC…")
-                decodeImportedAudioAndMux(
-                    context = context,
-                    audioUri = null,
-                    remoteUrl = src.url,
                     clipStartUs = (effectiveStartSec * 1_000_000L).toLong(),
                     clipEndUs = (effectiveEndSec * 1_000_000L).toLong(),
                     activeAudioSegments = activeSegs,
@@ -408,7 +391,7 @@ object HdVideoExporter {
     }
 
     /**
-     * Decodes an imported audio file (MP3, WAV, M4A, FLAC, OGG) using [MediaExtractor] and [MediaCodec],
+     * Decodes an imported local audio file (MP3, WAV, M4A, FLAC, OGG) using [MediaExtractor] and [MediaCodec],
      * filters decoded PCM through [activeAudioSegments] from the nondestructive [ProjectEdl],
      * encodes the resulting PCM stream into AAC (`audio/mp4a-latm`) with matching sample rate and channel
      * count, and muxes it with the H.264 video track into [finalOutputMp4File].
@@ -417,7 +400,6 @@ object HdVideoExporter {
     suspend fun decodeImportedAudioAndMux(
         context: Context,
         audioUri: Uri?,
-        remoteUrl: String?,
         clipStartUs: Long,
         clipEndUs: Long,
         activeAudioSegments: List<EdlAudioSegment> = emptyList(),
@@ -466,11 +448,9 @@ object HdVideoExporter {
             audioExtractor = aExt
             if (audioUri != null) {
                 aExt.setDataSource(context, audioUri, null)
-            } else if (!remoteUrl.isNullOrBlank()) {
-                aExt.setDataSource(remoteUrl)
             } else {
                 return@withContext Result.failure(
-                    IllegalArgumentException("No audio URI or URL provided for audio decoding.")
+                    IllegalArgumentException("No local audio URI provided for audio decoding.")
                 )
             }
 
